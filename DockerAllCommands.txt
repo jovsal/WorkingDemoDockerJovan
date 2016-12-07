@@ -1,0 +1,161 @@
+1. get all files without docker from dev branch (  git clone https://jovsal@bitbucket.org/blagojsk/library-package.git )
+
+2. in all subprojects (config, eureka , service and client) 
+	2.1.Add spotify as plugin in pom.xml
+	
+	<plugin>
+		<groupId>com.spotify</groupId>
+		<artifactId>docker-maven-plugin</artifactId>
+		<version>0.4.10</version>
+		<configuration>
+			<imageName>${project.artifactId}</imageName>
+			<!--<imageName>library-and-docker0Ip</imageName>-->
+			<baseImage>java:8</baseImage>
+			<entryPoint>["java", "-jar", "/${project.build.finalName}.jar"]</entryPoint>
+			<!-- copy the service's jar file from target into the root directory of the image -->
+			<resources>
+				<resource>
+					<targetPath>/</targetPath>
+					<directory>${project.build.directory}</directory>
+					<include>${project.build.finalName}.jar</include>
+				</resource>
+			</resources>
+		</configuration>
+		<executions>
+			<execution>
+				<id>build-image</id>
+				<phase>package</phase>
+				<goals>
+					<goal>build</goal>
+				</goals>
+			</execution>
+		</executions>
+	</plugin>
+
+3. In library-config :
+	1. spring.cloud.config.server.git.uri=https://github.com/jovsal/library-config-repo.git
+		
+4. In library-eureka-service:
+	1.In bootstrap.properties   spring.cloud.config.uri=http://172.17.0.1:10000
+	
+
+
+5. In library-service
+	1.In bootstrap.properties   spring.cloud.config.uri=http://172.17.0.1:10000
+		
+	2.Fix eureka dependency error by replacing with the following dependency code in the pom.xml 
+
+		<dependency>
+			<groupId>org.springframework.cloud</groupId>
+			<artifactId>spring-cloud-starter-eureka</artifactId>
+			<exclusions>
+				<exclusion>
+					<groupId>io.netty</groupId>
+					<artifactId>netty-transport-native-epoll</artifactId>
+				</exclusion>
+			</exclusions>
+		</dependency>
+	
+	3. Add @EnableEurekaClient in LibraryServiceApplication
+		*This step may not be required 
+
+6. In library-client
+	1.In bootstrap.properties   spring.cloud.config.uri=http://172.17.0.1:10000
+	
+	2. Add @EnableEurekaClient in LibraryClienApplication and in LibraryServiceApplication
+		*This step may not be required 
+
+***. Get docker0 bridge gateway address(inet) by type ifconfig in terminal // result in my case 172.17.0.1
+	* this address will be hardcoded in properties files but can easy overwritten with docker run -e "env.var=value"
+
+----------------------BUILD IMAGES---------------------------
+7.Build images by opening terminal in intellij and run 
+		mvn clean package docker:build -DskipTests 
+in all subprojects to build one by one 
+or in library folder to build all in onece
+
+8. Check if images are build by docker images
+
+------------------- RUN CASSANDRA AND RABBIT --------------
+
+9. Download abd Run rabbitmq by :
+   docker run -d --name rabbitmq -p 5671:5671 rabbitmq
+   
+10.Download abd Run  CASSANDRA by:
+   docker run -d --name cassandra -p 9042:9042 rabbitmq
+   
+11.Bootstrap cassandra, creating keyspace, tables and data
+
+	1.docker exec -it cassandra bash
+	2. cqlsh
+	3. create keyspace tables and data
+	
+		CREATE KEYSPACE library WITH replication = {'class': 'SimpleStrategy', 'replication_factor': '1'}  AND durable_writes = true;
+
+
+		CREATE TABLE library.book (
+			isbn text PRIMARY KEY,
+			title text,
+			author text,
+			year int
+		) WITH bloom_filter_fp_chance = 0.01
+			AND caching = '{"keys":"ALL", "rows_per_partition":"NONE"}'
+			AND comment = ''
+			AND compaction = {'class': 'org.apache.cassandra.db.compaction.SizeTieredCompactionStrategy'}
+			AND compression = {'sstable_compression': 'org.apache.cassandra.io.compress.LZ4Compressor'}
+			AND dclocal_read_repair_chance = 0.1
+			AND default_time_to_live = 0
+			AND gc_grace_seconds = 864000
+			AND max_index_interval = 2048
+			AND memtable_flush_period_in_ms = 0
+			AND min_index_interval = 128
+			AND read_repair_chance = 0.0
+			AND speculative_retry = '99.0PERCENTILE';
+			
+			
+		insert into library.book(isbn,title,author,year) values ('1','jovan','book title 1',2016);
+	4. exit
+
+---------------------RUN APPS CONTTAINERS -------------------
+
+12. Running config container with this command 
+	docker run -d --name config -p 10000:10000 library-config
+	
+	x. Wait to finish bootstrap of the application 
+		docker logs config - to see if the bootstrap if finished
+	
+13. Running eureka container with this command 
+	docker run -d --name eureka -p 8761:8761 library-eureka-service
+	
+	x. Wait to finish bootstrap of the application 
+	
+14. Running service container with this command 
+	docker run -d --name service -p 10002:10002 library-service
+	
+	x. Wait to finish bootstrap of the application 
+	
+15. Running client container with this command 
+	docker run -d --link service:library-service --name client -p 10003:10003 library-client
+	
+
+
+------------------Test it if it work -------------------------- 
+
+Open browser on VM and type
+	localhost:10002/api/books/all
+	localhost:10002/client/one/2
+
+//eureka
+localhost:8761 
+
+// test rabbitmq
+add book trough rabbitmq with POST method
+http://localhost:10003/rabbit/producer/create
+{
+    "isbn": "5",
+    "title": "Book Title 5",
+    "author": "author name 1",
+    "year": 2016
+}
+
+	
